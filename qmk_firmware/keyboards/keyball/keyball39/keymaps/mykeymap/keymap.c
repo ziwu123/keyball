@@ -17,77 +17,239 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include QMK_KEYBOARD_H
-
 #include "quantum.h"
 
+/*
+#ifdef OLED_ENABLE
+#include "lib/oledkit/oledkit.h"
+
+void oledkit_render_info_user(void) {
+    keyball_oled_render_keyinfo();
+    keyball_oled_render_ballinfo();
+}
+#endif
+
+layer_state_t layer_state_set_user(layer_state_t state) {
+    // Auto enable scroll mode when the highest layer is 2
+    keyball_set_scroll_mode(get_highest_layer(state) == 2);
+    return state;
+}
+*/
+
 enum {
-    N_B,
-    CT_CLN,
+    NONE = 0,
+    SINGLE_TAP = 1,
+    SINGLE_HOLD = 2,
+    DOUBLE_TAP = 3,
+    DOUBLE_HOLD = 4,
+    DOUBLE_SINGLE_TAP = 5, //send two single taps
+    TRIPLE_TAP = 6,
+    TRIPLE_HOLD = 7,
+    TRIPLE_SINGLE_TAP = 8, //send three single taps
+    MORE_TAP = 9
+};
+
+enum {
+    TD_TRIPLE_BRACE_START = 0,
+    TD_TRIPLE_BRACE_END,
+    TD_B,
+    TD_C,
+    TD_E,
+    TD_G,
+    TD_H,
+    TD_I,
+    TD_N,
+    TD_R,
+    TD_T,
+    TD_V,
+    TD_X,
+    TD_Y,
+    TD_Z
+};
+
+/*
+ * Return an integer that corresponds to what kind of tap dance should be executed.
+ *
+ * How to figure out tap dance state: interrupted and pressed.
+ *
+ * Interrupted: If the state of a dance dance is "interrupted", that means that another key has been hit
+ *  under the tapping term. This is typically indicitive that you are trying to "tap" the key.
+ *
+ * Pressed: Whether or not the key is still being pressed. If this value is true, that means the tapping term
+ *  has ended, but the key is still being pressed down. This generally means the key is being "held".
+ *
+ * One thing that is currenlty not possible with qmk software in regards to tap dance is to mimic the "permissive hold"
+ *  feature. In general, advanced tap dances do not work well if they are used with commonly typed letters.
+ *  For example "A". Tap dances are best used on non-letter keys that are not hit while typing letters.
+ *
+ * Good places to put an advanced tap dance:
+ *  z,q,x,j,k,v,b, any function key, home/end, comma, semi-colon
+ *
+ * Criteria for "good placement" of a tap dance key:
+ *  Not a key that is hit frequently in a sentence
+ *  Not a key that is used frequently to double tap, for example 'tab' is often double tapped in a terminal, or
+ *    in a web form. So 'tab' would be a poor choice for a tap dance.
+ *  Letters used in common words as a double. For example 'p' in 'pepper'. If a tap dance function existed on the
+ *    letter 'p', the word 'pepper' would be quite frustating to type.
+ *
+ * For the third point, there does exist the 'DOUBLE_SINGLE_TAP', however this is not fully tested
+ *
+ */
+int cur_dance (tap_dance_state_t *state) {
+    if (state->count == 1) {
+        if (state->interrupted || !state->pressed) {
+            return SINGLE_TAP;
+        } else {
+            // key has not been interrupted, but they key is still held. Means you want to send a 'HOLD'.
+            return SINGLE_HOLD;
+        }
+    }
+    else if (state->count == 2) {
+        /*
+        * DOUBLE_SINGLE_TAP is to distinguish between typing "pepper", and actually wanting a double tap
+        * action when hitting 'pp'. Suggested use case for this return value is when you want to send two
+        * keystrokes of the key, and not the 'double tap' action/macro.
+        */
+        if (state->interrupted) {
+            return DOUBLE_SINGLE_TAP;
+        } else if (state->pressed) {
+            return DOUBLE_HOLD;
+        } else {
+            return DOUBLE_TAP;
+        }
+    }
+    // Assumes no one is trying to type the same letter three times (at least not quickly).
+    // If your tap dance key is 'KC_W', and you want to type "www." quickly - then you will need to add
+    // an exception here to return a 'TRIPLE_SINGLE_TAP', and define that enum just like 'DOUBLE_SINGLE_TAP'
+    else if (state->count == 3) {
+        if (state->interrupted) {
+            return TRIPLE_SINGLE_TAP;
+        } else if (state->pressed) {
+            return TRIPLE_HOLD;
+        } else {
+            return TRIPLE_TAP;
+        }
+    }
+    else if (state->count > 3) {
+        return MORE_TAP;
+    }
+    else return 99; //magic number. At some point this method will expand to work for more presses
 };
 
 typedef struct {
-    uint16_t tap;
-    uint16_t hold;
-    uint16_t held;
-} tap_dance_tap_hold_t;
+    bool is_press_action;
+    int state;
+} tap;
 
-bool process_record_user(uint16_t keycode, keyrecord_t *record) {
-    tap_dance_action_t *action;
+//instanalize an instance of 'tap' for the 'x' tap dance.
+static tap btap_state = {
+    .is_press_action = true,
+    .state = NONE
+};
 
-    switch (keycode) {
-        case TD(CT_CLN):  // list all tap dance keycodes with tap-hold configurations
-        case TD(N_B):
-            action = &tap_dance_actions[QK_UNICODEMAP_GET_INDEX(keycode)];
-            if (!record->event.pressed && action->state.count && !action->state.finished) {
-                tap_dance_tap_hold_t *tap_hold = (tap_dance_tap_hold_t *)action->user_data;
-                tap_code16(tap_hold->tap);
-            }
+
+void repeat_key_x_time(uint16_t keycode, int x) {
+    for (int i = 0; i < x; i++) {
+        register_code(keycode);
     }
-    return true;
-}
 
-void tap_dance_tap_hold_finished(tap_dance_state_t *state, void *user_data) {
-    tap_dance_tap_hold_t *tap_hold = (tap_dance_tap_hold_t *)user_data;
-
-    if (state->pressed) {
-        if (state->count == 1
-#ifndef PERMISSIVE_HOLD
-            //&& !state->interrupted
-#endif
-        ) {
-            register_code16(tap_hold->hold);
-            tap_hold->held = tap_hold->hold;
-        } else {
-            register_code16(tap_hold->tap);
-            tap_hold->held = tap_hold->tap;
-        }
+    // less than register_code because unregister_code in hoge_reset
+    for (int i = 1; i < x; i++) {
+        unregister_code(keycode);
     }
 }
 
-void tap_dance_tap_hold_reset(tap_dance_state_t *state, void *user_data) {
-    tap_dance_tap_hold_t *tap_hold = (tap_dance_tap_hold_t *)user_data;
-
-    if (tap_hold->held) {
-        unregister_code16(tap_hold->held);
-        tap_hold->held = 0;
+void b_finished (tap_dance_state_t *state, void *user_data) {
+    btap_state.state = cur_dance(state);
+    switch (btap_state.state) {
+        case SINGLE_TAP:
+            register_code(KC_B);
+            break;
+        case SINGLE_HOLD:
+            register_code(KC_LSFT);
+            register_code(KC_LBRC);
+            break;
+        case DOUBLE_TAP:
+            repeat_key_x_time(KC_B, 2);
+            break;
+        case DOUBLE_HOLD:
+            register_code(KC_B);
+            break;
+        // description of DOUBLE_SINGLE_TAP
+        // case TD_SINGLE_TAP: register_code(KC_F); break;
+        // case TD_SINGLE_HOLD: register_code(KC_LCTL); break;
+        // case TD_DOUBLE_TAP: register_code(KC_ESC); break;
+        // case TD_DOUBLE_HOLD: register_code(KC_LALT); break;
+        // Last case is for fast typing. Assuming your key is `f`:
+        // For example, when typing the word `buffer`, and you want to make sure that you send `ff` and not `Esc`.
+        // In order to type `ff` when typing fast, the next character will have to be hit within the `TAPPING_TERM`, which by default is 200ms.
+        // case TD_DOUBLE_SINGLE_TAP: tap_code(KC_X); register_code(KC_X); break;
+        case DOUBLE_SINGLE_TAP:
+            repeat_key_x_time(KC_B, 2);
+            break;
+        case TRIPLE_TAP:
+            repeat_key_x_time(KC_B, 3);
+            break;
+        case TRIPLE_HOLD:
+            register_code(KC_B);
+            break;
+        case TRIPLE_SINGLE_TAP:
+            repeat_key_x_time(KC_B, 3);
+            break;
+        case MORE_TAP:
+            repeat_key_x_time(KC_B, state->count);
+            break;
+        default:
+            break;
     }
-}
-
-#define ACTION_TAP_DANCE_TAP_HOLD(tap, hold) \
-    { .fn = {NULL, tap_dance_tap_hold_finished, tap_dance_tap_hold_reset}, .user_data = (void *)&((tap_dance_tap_hold_t){tap, hold, 0}), }
+};
+void b_reset (tap_dance_state_t *state, void *user_data) {
+    switch (btap_state.state) {
+        case SINGLE_TAP:
+            unregister_code(KC_B);
+            break;
+        case SINGLE_HOLD:
+            unregister_code(KC_LSFT);
+            unregister_code(KC_LBRC);
+            break;
+        case DOUBLE_TAP:
+            unregister_code(KC_B);
+            break;
+        case DOUBLE_HOLD:
+            unregister_code(KC_B);
+            break;
+        case DOUBLE_SINGLE_TAP:
+            unregister_code(KC_B);
+            break;
+        case TRIPLE_TAP:
+            unregister_code(KC_B);
+            break;
+        case TRIPLE_HOLD:
+            unregister_code(KC_B);
+            break;
+        case TRIPLE_SINGLE_TAP:
+            unregister_code(KC_B);
+            break;
+        case MORE_TAP:
+            unregister_code(KC_B);
+            break;
+        default:
+            break;
+    }
+    btap_state.state = NONE;
+};
 
 tap_dance_action_t tap_dance_actions[] = {
-    [CT_CLN] = ACTION_TAP_DANCE_TAP_HOLD(KC_COLN, KC_SCLN),
-    [N_B] = ACTION_TAP_DANCE_TAP_HOLD(KC_N, KC_B)
+    [TD_B] = ACTION_TAP_DANCE_FN_ADVANCED(NULL, b_finished, b_reset),
 };
 
 // clang-format off
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
   // keymap for default
   [0] = LAYOUT_universal(
-    TD(CT_CLN)     , TD(N_B)     , KC_E     , KC_R     , KC_T     ,                            KC_Y     , KC_U     , KC_I     , KC_O     , KC_P     ,
-    KC_A     , KC_S     , KC_D     , KC_F     , KC_G     ,                            KC_H     , KC_J     , KC_K     , KC_L     , KC_MINS  ,
-    KC_Z     , KC_X     , KC_C     , KC_V     , KC_B     ,                            KC_N     , KC_M     , KC_COMM  , KC_DOT   , KC_SLSH  ,
+    KC_Q     , TD(TD_B)     , KC_E     , KC_R     , KC_T     ,                            KC_Y     , KC_U     , KC_I     , KC_O     , KC_P     ,
+    MT(MOD_LSFT, KC_A)     , KC_S     , KC_D     , KC_F     , KC_G     ,                            KC_H     , KC_J     , KC_K     , KC_L     , KC_MINS  ,
+    LSFT_T(KC_Z)     , KC_X     , KC_C     , KC_V     , KC_B     ,                            KC_N     , KC_M     , KC_COMM  , KC_DOT   , KC_SLSH  ,
     KC_LCTL  , KC_LGUI  , KC_LALT  ,LSFT_T(KC_LNG2),LT(1,KC_SPC),LT(3,KC_LNG1),KC_BSPC,LT(2,KC_ENT),LSFT_T(KC_LNG2),KC_RALT,KC_RGUI, KC_RSFT
   ),
 
