@@ -20,6 +20,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "quantum.h"
 
+enum {
+    N_B,
+    CT_CLN,
+};
+
 typedef struct {
     uint16_t tap;
     uint16_t hold;
