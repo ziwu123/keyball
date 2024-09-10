@@ -52,7 +52,7 @@ void tap_dance_tap_hold_finished(tap_dance_state_t *state, void *user_data) {
     if (state->pressed) {
         if (state->count == 1
 #ifndef PERMISSIVE_HOLD
-            && !state->interrupted
+            //&& !state->interrupted
 #endif
         ) {
             register_code16(tap_hold->hold);
